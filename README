@@ -67,6 +67,9 @@ Multiload - a superset of multichase which runs latency, memory bandwidth, and l
      To run, simply do:
     $ pingpong -u
 
+     To measure between two specified logical CPUs (for example, CPUs 2 and 7):
+    $ pingpong -u -p 2,7
+
    - Fairness: measure fairness with N threads competing to increment an atomic variable.
      To run, simply do:
     $ fairness

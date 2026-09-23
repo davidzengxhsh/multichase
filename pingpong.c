@@ -30,6 +30,8 @@
 
 static size_t nr_relax = 10;
 static size_t nr_tested_cores = ~0;
+static size_t selected_cpu_a = ~0;
+static size_t selected_cpu_b = ~0;
 
 typedef unsigned atomic_t;
 
@@ -59,6 +61,28 @@ typedef struct {
   atomic_t me;
   atomic_t buddy;
 } thread_args_t;
+
+static int parse_cpu_pair(const char *arg) {
+  char *end;
+
+  errno = 0;
+  unsigned long cpu_a = strtoul(arg, &end, 0);
+  if (errno || end == arg || *end != ',') {
+    return -1;
+  }
+
+  const char *cpu_b_arg = end + 1;
+  errno = 0;
+  unsigned long cpu_b = strtoul(cpu_b_arg, &end, 0);
+  if (errno || end == cpu_b_arg || *end || cpu_a >= CPU_SETSIZE ||
+      cpu_b >= CPU_SETSIZE || cpu_a == cpu_b) {
+    return -1;
+  }
+
+  selected_cpu_a = cpu_a;
+  selected_cpu_b = cpu_b;
+  return 0;
+}
 
 static void common_setup(thread_args_t *args) {
   // move to our target cpu
@@ -170,10 +194,11 @@ template(unlocked_loop, unlocked_xchg)
 
 int main(int argc, char **argv) {
   void *(*thread_fn)(void *data) = NULL;
+  int nr_tested_cores_specified = 0;
   int c;
   char *p;
 
-  while ((c = getopt(argc, argv, "c:lur:xs:")) != -1) {
+  while ((c = getopt(argc, argv, "c:lup:r:xs:")) != -1) {
     switch (c) {
       case 'l':
         if (thread_fn) goto thread_fn_error;
@@ -200,6 +225,14 @@ int main(int argc, char **argv) {
           fprintf(stderr, "-c requires a numeric argument\n");
           exit(1);
         }
+        nr_tested_cores_specified = 1;
+        break;
+      case 'p':
+        if (parse_cpu_pair(optarg)) {
+          fprintf(stderr,
+                  "-p requires two distinct logical CPU IDs: cpu_a,cpu_b\n");
+          exit(1);
+        }
         break;
       case 's':
         nr_array_elts = strtoul(optarg, &p, 0);
@@ -216,7 +249,8 @@ int main(int argc, char **argv) {
       default:
         fprintf(stderr,
                 "usage: %s [-l | -u | -x] [-r nr_relax] [-s "
-                "nr_array_elts_to_dirty] [-c nr_tested_cores]\n",
+            "nr_array_elts_to_dirty] [-c nr_tested_cores | "
+            "-p cpu_a,cpu_b]\n",
                 argv[0]);
         exit(1);
     }
@@ -224,6 +258,10 @@ int main(int argc, char **argv) {
   if (thread_fn == NULL) {
   thread_fn_error:
     fprintf(stderr, "must specify exactly one of -u, -l or -x\n");
+    exit(1);
+  }
+  if (nr_tested_cores_specified && selected_cpu_a != (size_t)~0) {
+    fprintf(stderr, "-c and -p cannot be used together\n");
     exit(1);
   }
 
@@ -234,6 +272,19 @@ int main(int argc, char **argv) {
   if (sched_getaffinity(getpid(), sizeof(cpus), &cpus)) {
     perror("sched_getaffinity");
     exit(1);
+  }
+  if (selected_cpu_a != (size_t)~0) {
+    if (!CPU_ISSET(selected_cpu_a, &cpus) ||
+        !CPU_ISSET(selected_cpu_b, &cpus)) {
+      fprintf(stderr,
+              "requested logical CPUs %zu and %zu must both be in the "
+              "process affinity mask\n",
+              selected_cpu_a, selected_cpu_b);
+      exit(1);
+    }
+    CPU_ZERO(&cpus);
+    CPU_SET(selected_cpu_a, &cpus);
+    CPU_SET(selected_cpu_b, &cpus);
   }
 
   printf(
